@@ -24,17 +24,21 @@ func newCursor(val int) cursor {
 	return cursor(&s[0])
 }
 
+func next(c cursor, card int) int {
+	return int((atomic.LoadInt64(c) + 1) % int64(card))
+}
+
 func pos(c cursor) int {
 	return int(atomic.LoadInt64(c))
 }
 
-func inc(c cursor, card int) {
+func inc(c cursor, card int) int {
 	for {
-		v1 := *c
-		v2 := (*c + 1) % int64(card)
+		v1 := atomic.LoadInt64(c)
+		v2 := (v1 + 1) % int64(card)
 
 		if atomic.CompareAndSwapInt64(c, v1, v2) {
-			return
+			return int(v2)
 		}
 	}
 
