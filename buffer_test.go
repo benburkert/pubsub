@@ -167,3 +167,73 @@ func TestConcurrentReadTo(t *testing.T) {
 		}
 	}
 }
+
+var buffr *Buffer
+
+func BenchmarkSmallBuffer(b *testing.B) {
+	n := (b.N + 1) / 2
+	if n < 2 {
+		n = 2
+	}
+
+	m := runtime.GOMAXPROCS(-1)
+	buffer := NewBuffer(n, m)
+	buffr = buffer
+
+	data := make([]interface{}, b.N)
+	for i := range data {
+		data[i] = i
+	}
+
+	donewg := sync.WaitGroup{}
+	donewg.Add(m)
+
+	for i := 0; i < m; i++ {
+		go func() {
+			defer donewg.Done()
+			count := 0
+			buffer.ReadTo(func(v interface{}) bool {
+				count++
+				return count == len(data)
+			})
+		}()
+	}
+
+	b.SetBytes(int64(m))
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	buffer.WriteSlice(data)
+	donewg.Wait()
+}
+
+func BenchmarkLargeBuffer(b *testing.B) {
+	m := runtime.GOMAXPROCS(-1)
+	buffer := NewBuffer(b.N*2, m)
+
+	data := make([]interface{}, b.N)
+	for i := range data {
+		data[i] = i
+	}
+
+	donewg := sync.WaitGroup{}
+	donewg.Add(m)
+
+	for i := 0; i < m; i++ {
+		go func() {
+			defer donewg.Done()
+			count := 0
+			buffer.ReadTo(func(v interface{}) bool {
+				count++
+				return count == len(data)
+			})
+		}()
+	}
+
+	b.SetBytes(int64(m))
+	b.ReportAllocs()
+	b.ResetTimer()
+
+	buffer.WriteSlice(data)
+	donewg.Wait()
+}

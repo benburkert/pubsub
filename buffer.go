@@ -12,7 +12,6 @@ type ReaderFunc func(interface{}) bool
 
 type Buffer struct {
 	mu   sync.RWMutex
-	cond *sync.Cond
 	data []interface{}
 	card int
 
