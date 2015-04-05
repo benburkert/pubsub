@@ -2,6 +2,8 @@ package pubsub
 
 import (
 	"reflect"
+	"runtime"
+	"sync"
 	"testing"
 )
 
@@ -118,4 +120,50 @@ func TestBufferFullReadTo(t *testing.T) {
 		t.Errorf("want full read func %v, got %v", want, got)
 	}
 
+}
+
+func TestConcurrentReadTo(t *testing.T) {
+	n, m := 1024, runtime.NumCPU()-1
+	buffer := NewBuffer(n, m)
+
+	data := make([]interface{}, n*m)
+	for i := range data {
+		data[i] = i
+	}
+
+	gots := make([][]interface{}, m)
+
+	readywg := sync.WaitGroup{}
+	readywg.Add(m)
+
+	donewg := sync.WaitGroup{}
+	donewg.Add(m)
+
+	for i := range gots {
+		go func(i int) {
+			got := make([]interface{}, 0, len(data))
+			var rfn ReaderFunc = func(v interface{}) bool {
+				got = append(got, v)
+				if len(got) == len(data) {
+					gots[i] = got
+					donewg.Done()
+					return false
+				}
+				return true
+			}
+
+			buffer.ReadTo(rfn)
+			readywg.Done()
+		}(i)
+	}
+
+	readywg.Wait()
+	buffer.WriteSlice(data)
+	donewg.Wait()
+
+	for _, got := range gots {
+		if !reflect.DeepEqual(data, got) {
+			t.Errorf("want buffer read to %v, got %v", data, got)
+		}
+	}
 }

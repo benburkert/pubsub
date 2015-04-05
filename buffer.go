@@ -2,8 +2,10 @@ package pubsub
 
 import "sync"
 
+type Marker int
+
 const (
-	empty = iota
+	EmptyMarker Marker = iota
 )
 
 type ReaderFunc func(interface{}) bool
@@ -30,7 +32,7 @@ func NewBuffer(bufLen, maxReaders int) *Buffer {
 	}
 
 	for i := range b.data {
-		b.data[i] = empty
+		b.data[i] = EmptyMarker
 	}
 
 	b.wcond = sync.NewCond(&b.mu)
@@ -88,7 +90,7 @@ func (b *Buffer) getCursor() cursor {
 // assumes b.mu Rlock held
 func (b *Buffer) read(c cursor) []interface{} {
 	rpos := pos(c)
-	if b.data[rpos] == empty {
+	if b.data[rpos] == EmptyMarker {
 		s := make([]interface{}, rpos)
 		copy(s, b.data[:rpos])
 		return s
