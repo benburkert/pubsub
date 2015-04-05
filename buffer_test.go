@@ -43,6 +43,7 @@ func TestBufferReadTo(t *testing.T) {
 		got = append(got, v.(string))
 		if len(got) == len(want) {
 			close(donec)
+			return false
 		}
 		return true
 	}
@@ -56,4 +57,65 @@ func TestBufferReadTo(t *testing.T) {
 	if !reflect.DeepEqual(want, got) {
 		t.Errorf("want buffer read to %v, got %v", want, got)
 	}
+}
+
+func TestBufferWriteSlice(t *testing.T) {
+	buffer := NewBuffer(3, 1)
+	donec := make(chan struct{})
+	want := []interface{}{"A", "B", "C", "D", "E"}
+
+	got := []interface{}{}
+	var rfn ReaderFunc = func(v interface{}) bool {
+		got = append(got, v)
+		if len(got) == len(want) {
+			close(donec)
+			return false
+		}
+		return true
+	}
+	buffer.ReadTo(rfn)
+
+	buffer.WriteSlice(want)
+
+	<-donec
+	if !reflect.DeepEqual(want, got) {
+		t.Errorf("want buffer read to %v, got %v", want, got)
+	}
+
+	got = buffer.Read()
+	if !reflect.DeepEqual(want[2:], got) {
+		t.Errorf("want buffer read %v, got %v", want[2:], got)
+	}
+}
+
+func TestBufferFullReadTo(t *testing.T) {
+	buffer := NewBuffer(3, 1)
+	donec := make(chan struct{})
+	data := []interface{}{"A", "B", "C", "D", "E", "F", "G", "H", "I"}
+
+	buffer.WriteSlice(data[:5])
+
+	got := []interface{}{}
+	var rfn ReaderFunc = func(v interface{}) bool {
+		got = append(got, v)
+		if len(got) == len(data[5:]) {
+			close(donec)
+			return false
+		}
+		return true
+	}
+
+	want := data[2:5]
+	if s := buffer.FullReadTo(rfn); !reflect.DeepEqual(want, s) {
+		t.Errorf("want full read %v, got %v", want, s)
+	}
+
+	buffer.WriteSlice(data[5:])
+
+	<-donec
+	want = data[5:]
+	if !reflect.DeepEqual(want, got) {
+		t.Errorf("want full read func %v, got %v", want, got)
+	}
+
 }

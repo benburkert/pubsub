@@ -38,24 +38,24 @@ func NewBuffer(bufLen, maxReaders int) *Buffer {
 	return b
 }
 
+func (b *Buffer) FullReadTo(rfn ReaderFunc) []interface{} {
+	b.mu.RLock() // unlocked in readTo
+
+	c := b.getCursor() // reset in readTo
+	s := b.read(c)
+
+	go b.readTo(c, rfn)
+	return s
+}
+
 func (b *Buffer) Read() []interface{} {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 
-	cursor := b.getCursor()
-	defer reset(cursor)
+	c := b.getCursor()
+	defer reset(c)
 
-	rpos := pos(cursor)
-	if b.data[rpos] == empty {
-		s := make([]interface{}, rpos)
-		copy(s, b.data[:rpos])
-		return s
-	}
-
-	s := make([]interface{}, b.card)
-	copy(s[:(b.card-rpos)], b.data[rpos:])
-	copy(s[(b.card-rpos):], b.data[:rpos])
-	return s
+	return b.read(c)
 }
 
 func (b *Buffer) ReadTo(rfn ReaderFunc) {
@@ -68,20 +68,36 @@ func (b *Buffer) Write(v interface{}) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	for b.writeBarrier() {
-		b.wcond.Wait()
+	b.write(v)
+}
+
+func (b *Buffer) WriteSlice(vs []interface{}) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	for _, v := range vs {
+		b.write(v)
 	}
-
-	wpos := pos(b.wcursor)
-	b.data[wpos] = v
-	inc(b.wcursor, b.card)
-
-	b.rcond.Broadcast()
 }
 
 // assumes b.mu RLock held
 func (b *Buffer) getCursor() cursor {
 	return b.rcursors.get(pos(b.wcursor))
+}
+
+// assumes b.mu Rlock held
+func (b *Buffer) read(c cursor) []interface{} {
+	rpos := pos(c)
+	if b.data[rpos] == empty {
+		s := make([]interface{}, rpos)
+		copy(s, b.data[:rpos])
+		return s
+	}
+
+	s := make([]interface{}, b.card)
+	copy(s[:(b.card-rpos)], b.data[rpos:])
+	copy(s[(b.card-rpos):], b.data[:rpos])
+	return s
 }
 
 // assumes b.mu RLock held
@@ -109,6 +125,19 @@ func (b *Buffer) readTo(c cursor, rfn ReaderFunc) {
 		}
 		b.wcond.Signal()
 	}
+}
+
+// asumes b.mu Lock held
+func (b *Buffer) write(v interface{}) {
+	for b.writeBarrier() {
+		b.wcond.Wait()
+	}
+
+	wpos := pos(b.wcursor)
+	b.data[wpos] = v
+	inc(b.wcursor, b.card)
+
+	b.rcond.Broadcast()
 }
 
 // assumes b.mu Lock held
