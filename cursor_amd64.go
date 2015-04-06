@@ -2,6 +2,7 @@ package pubsub
 
 import (
 	"fmt"
+	"math"
 	"sync/atomic"
 	"unsafe"
 )
@@ -16,58 +17,60 @@ func init() {
 	}
 }
 
-type cursor *int64
+type cursor [cacheLineSize]int64
 
-func newCursor(val int) cursor {
-	s := [cacheLineSize]int64{}
-	s[0] = int64(val)
-	return cursor(&s[0])
+func newCursor(val, mask int) *cursor {
+	a := [cacheLineSize]int64{int64(val), int64(mask)}
+	c := cursor(a)
+	return &c
 }
 
-func next(c cursor, card int) int {
-	return int((atomic.LoadInt64(c) + 1) % int64(card))
+func (c *cursor) next() int {
+	return int((atomic.LoadInt64(&c[0]) + 1) & c[1])
 }
 
-func pos(c cursor) int {
-	return int(atomic.LoadInt64(c))
+func (c *cursor) pos() int {
+	return int(atomic.LoadInt64(&c[0]))
 }
 
-func inc(c cursor, card int) int {
+func (c *cursor) inc() int {
 	for {
-		v1 := atomic.LoadInt64(c)
-		v2 := (v1 + 1) % int64(card)
+		v1 := atomic.LoadInt64(&c[0])
+		v2 := (v1 + 1) & c[1]
 
-		if atomic.CompareAndSwapInt64(c, v1, v2) {
+		if atomic.CompareAndSwapInt64(&c[0], v1, v2) {
+
 			return int(v2)
 		}
 	}
-
 }
 
-func reset(c cursor) {
-	atomic.StoreInt64(c, -1)
+func (c *cursor) reset() {
+	atomic.StoreInt64(&c[0], int64(-1))
 }
 
-type cursorSlice []cursor
+type cursorSlice []*cursor
 
-func newCursorSlice(size int) cursorSlice {
-	s := make([]int64, size*cacheLineSize)
+func newCursorSlice(size, mask int) cursorSlice {
 	cs := make(cursorSlice, size)
 	for i := range cs {
-		cs[i] = cursor(&s[i*cacheLineSize])
-		reset(cs[i])
+		cs[i] = newCursor(-1, mask)
 	}
 	return cs
 }
 
-func (s cursorSlice) get(val int) cursor {
+func (s cursorSlice) get(val int) *cursor {
 	v1 := int64(-1)
 	v2 := int64(val)
 	for {
 		for i := range s {
-			if atomic.CompareAndSwapInt64(s[i], v1, v2) {
+			if atomic.CompareAndSwapInt64(&s[i][0], v1, v2) {
 				return s[i]
 			}
 		}
 	}
+}
+
+func nextPow2(v int) int {
+	return int(math.Pow(2, math.Ceil(math.Log2(float64(v)))))
 }

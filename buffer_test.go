@@ -8,7 +8,7 @@ import (
 )
 
 func TestBufferWrite(t *testing.T) {
-	buffer := NewBuffer(3, 1)
+	buffer := NewBuffer(4, 1)
 
 	want := []interface{}{}
 	if got := buffer.Read(); !reflect.DeepEqual(want, got) {
@@ -29,14 +29,15 @@ func TestBufferWrite(t *testing.T) {
 	}
 
 	buffer.Write("four")
-	want = append(want[1:], "four")
+	buffer.Write("five")
+	want = append(want[1:], "four", "five")
 	if got := buffer.Read(); !reflect.DeepEqual(want, got) {
 		t.Errorf("want wrapped buffer read %v, got %v", want, got)
 	}
 }
 
 func TestBufferReadTo(t *testing.T) {
-	buffer := NewBuffer(3, 1)
+	buffer := NewBuffer(4, 1)
 	donec := make(chan struct{})
 	want := []string{"A", "B", "C", "D", "E", "F", "G", "H", "I"}
 
@@ -62,7 +63,7 @@ func TestBufferReadTo(t *testing.T) {
 }
 
 func TestBufferWriteSlice(t *testing.T) {
-	buffer := NewBuffer(3, 1)
+	buffer := NewBuffer(4, 1)
 	donec := make(chan struct{})
 	want := []interface{}{"A", "B", "C", "D", "E"}
 
@@ -85,13 +86,13 @@ func TestBufferWriteSlice(t *testing.T) {
 	}
 
 	got = buffer.Read()
-	if !reflect.DeepEqual(want[2:], got) {
-		t.Errorf("want buffer read %v, got %v", want[2:], got)
+	if !reflect.DeepEqual(want[1:], got) {
+		t.Errorf("want buffer read %v, got %v", want[1:], got)
 	}
 }
 
 func TestBufferFullReadTo(t *testing.T) {
-	buffer := NewBuffer(3, 1)
+	buffer := NewBuffer(4, 1)
 	donec := make(chan struct{})
 	data := []interface{}{"A", "B", "C", "D", "E", "F", "G", "H", "I"}
 
@@ -107,7 +108,7 @@ func TestBufferFullReadTo(t *testing.T) {
 		return true
 	}
 
-	want := data[2:5]
+	want := data[1:5]
 	if s := buffer.FullReadTo(rfn); !reflect.DeepEqual(want, s) {
 		t.Errorf("want full read %v, got %v", want, s)
 	}

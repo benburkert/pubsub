@@ -13,21 +13,22 @@ type ReaderFunc func(interface{}) bool
 type Buffer struct {
 	mu   sync.RWMutex
 	data []interface{}
-	card int
 
 	wcond   *sync.Cond
-	wcursor cursor
+	wcursor *cursor
 
 	rcond    *sync.Cond
 	rcursors cursorSlice
 }
 
-func NewBuffer(bufLen, maxReaders int) *Buffer {
+func NewBuffer(minSize, maxReaders int) *Buffer {
+	size := nextPow2(minSize)
+	mask := size - 1
+
 	b := &Buffer{
-		data:     make([]interface{}, bufLen),
-		card:     bufLen,
-		wcursor:  newCursor(0),
-		rcursors: newCursorSlice(maxReaders),
+		data:     make([]interface{}, size),
+		wcursor:  newCursor(0, mask),
+		rcursors: newCursorSlice(maxReaders, mask),
 	}
 
 	for i := range b.data {
@@ -54,7 +55,7 @@ func (b *Buffer) Read() []interface{} {
 	defer b.mu.RUnlock()
 
 	c := b.getCursor()
-	defer reset(c)
+	defer c.reset()
 
 	return b.read(c)
 }
@@ -82,47 +83,48 @@ func (b *Buffer) WriteSlice(vs []interface{}) {
 }
 
 // assumes b.mu RLock held
-func (b *Buffer) getCursor() cursor {
-	return b.rcursors.get(pos(b.wcursor))
+func (b *Buffer) getCursor() *cursor {
+	return b.rcursors.get(b.wcursor.pos())
 }
 
 // assumes b.mu Rlock held
-func (b *Buffer) read(c cursor) []interface{} {
-	rpos := pos(c)
+func (b *Buffer) read(c *cursor) []interface{} {
+	rpos := c.pos()
 	if b.data[rpos] == EmptyMarker {
 		s := make([]interface{}, rpos)
 		copy(s, b.data[:rpos])
 		return s
 	}
 
-	s := make([]interface{}, b.card)
-	copy(s[:(b.card-rpos)], b.data[rpos:])
-	copy(s[(b.card-rpos):], b.data[:rpos])
+	size := len(b.data)
+	s := make([]interface{}, size)
+	copy(s[:(size-rpos)], b.data[rpos:])
+	copy(s[(size-rpos):], b.data[:rpos])
 	return s
 }
 
 // assumes b.mu RLock held
-func (b *Buffer) readBarrier(c cursor) bool {
-	return pos(c) == pos(b.wcursor)
+func (b *Buffer) readBarrier(c *cursor) bool {
+	return c.pos() == b.wcursor.pos()
 }
 
 // asumes b.mu RLock held
-func (b *Buffer) readTo(c cursor, rfn ReaderFunc) {
+func (b *Buffer) readTo(c *cursor, rfn ReaderFunc) {
 	defer b.mu.RUnlock()
 	defer b.wcond.Signal()
-	defer reset(c)
+	defer c.reset()
 
 	for {
 		for b.readBarrier(c) {
 			b.rcond.Wait()
 		}
 
-		rpos, wpos := pos(c), pos(b.wcursor)
+		rpos, wpos := c.pos(), b.wcursor.pos()
 		for rpos != wpos {
 			if !rfn(b.data[rpos]) {
 				return
 			}
-			rpos = inc(c, b.card)
+			rpos = c.inc()
 		}
 		b.wcond.Signal()
 	}
@@ -134,18 +136,18 @@ func (b *Buffer) write(v interface{}) {
 		b.wcond.Wait()
 	}
 
-	wpos := pos(b.wcursor)
+	wpos := b.wcursor.pos()
 	b.data[wpos] = v
-	inc(b.wcursor, b.card)
+	b.wcursor.inc()
 
 	b.rcond.Broadcast()
 }
 
 // assumes b.mu Lock held
 func (b *Buffer) writeBarrier() bool {
-	npos := next(b.wcursor, b.card)
+	npos := b.wcursor.next()
 	for _, c := range b.rcursors {
-		if npos == pos(c) {
+		if npos == c.pos() {
 			return true
 		}
 	}
