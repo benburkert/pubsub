@@ -15,6 +15,9 @@ func init() {
 	if wordSize != 8 {
 		panic(fmt.Sprintf("expected word size of 8, not %d", wordSize))
 	}
+	if cursorSize := int(unsafe.Sizeof(cursor{})); cursorSize != 64 {
+		panic(fmt.Sprintf("expected cursor size of 64, not %d", cursorSize))
+	}
 }
 
 type cursor [cacheLineSize]int64

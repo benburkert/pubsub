@@ -110,7 +110,6 @@ func (b *Buffer) readBarrier(c *cursor) bool {
 
 // asumes b.mu RLock held
 func (b *Buffer) readTo(c *cursor, rfn ReaderFunc) {
-	defer b.mu.RUnlock()
 	defer b.wcond.Signal()
 	defer c.reset()
 
@@ -121,10 +120,14 @@ func (b *Buffer) readTo(c *cursor, rfn ReaderFunc) {
 
 		rpos, wpos := c.pos(), b.wcursor.pos()
 		for rpos != wpos {
-			if !rfn(b.data[rpos]) {
+			v := b.data[rpos]
+			rpos = c.inc()
+
+			b.mu.RUnlock()
+			if !rfn(v) {
 				return
 			}
-			rpos = c.inc()
+			b.mu.RLock()
 		}
 		b.wcond.Signal()
 	}
