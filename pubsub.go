@@ -11,12 +11,12 @@ var (
 	errMaxSub = errors.New("maxSubCount reached")
 )
 
-type markerChan chan struct{}
+type MarkerChan chan struct{}
 
 type PubSub struct {
 	buffer *Buffer
 
-	donec markerChan
+	donec MarkerChan
 	doneo sync.Once
 
 	pubwg sync.WaitGroup
@@ -38,9 +38,39 @@ func New(minBufferSize, maxSubCount int) (*PubSub, error) {
 
 	return &PubSub{
 		buffer: NewBuffer(size, maxSubCount),
-		donec:  make(markerChan),
+		donec:  make(MarkerChan),
 		subMax: maxSubCount,
 	}, nil
+}
+
+func (ps *PubSub) AddPublisher(pub Publisher) error {
+	if ps.isClosed() {
+		return errClosed
+	}
+
+	ps.pubwg.Add(1)
+	ctx := &Context{
+		Buffer: ps.buffer,
+		Done:   ps.donec,
+		Close:  ps.pubwg.Done,
+	}
+	return pub.PublishTo(ctx)
+}
+
+func (ps *PubSub) AddSubscriber(sub Subscriber) error {
+	if ps.isClosed() {
+		return errClosed
+	}
+	if !ps.addSub() {
+		return errMaxSub
+	}
+
+	ctx := &Context{
+		Buffer: ps.buffer,
+		Done:   ps.donec,
+		Close:  ps.delSub,
+	}
+	return sub.SubscribeTo(ctx)
 }
 
 func (ps *PubSub) Close() {
@@ -104,14 +134,14 @@ func (ps *PubSub) SubChan(ch chan<- interface{}) (chan<- struct{}, error) {
 		return nil, errMaxSub
 	}
 
-	unsubc := make(markerChan)
+	unsubc := make(MarkerChan)
 	go func() {
 		<-unsubc
 		ps.Pub(unsubc)
 	}()
 
 	rfn := func(v interface{}) bool {
-		if vch, ok := v.(markerChan); ok {
+		if vch, ok := v.(MarkerChan); ok {
 			if vch == ps.donec || vch == unsubc {
 				close(ch)
 				ps.delSub()
@@ -135,13 +165,13 @@ func (ps *PubSub) SubFunc(fn func(interface{})) (func(), error) {
 		return nil, errMaxSub
 	}
 
-	unsubc := make(markerChan)
+	unsubc := make(MarkerChan)
 	unsubfn := func() {
 		ps.Pub(unsubc)
 	}
 
 	rfn := func(v interface{}) bool {
-		if vch, ok := v.(markerChan); ok {
+		if vch, ok := v.(MarkerChan); ok {
 			if vch == ps.donec || vch == unsubc {
 				ps.delSub()
 				return false
