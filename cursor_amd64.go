@@ -2,7 +2,6 @@ package pubsub
 
 import (
 	"fmt"
-	"math"
 	"sync/atomic"
 	"unsafe"
 )
@@ -74,6 +73,18 @@ func (s cursorSlice) get(val int) *cursor {
 	}
 }
 
-func nextPow2(v int) int {
-	return int(math.Pow(2, math.Ceil(math.Log2(float64(v)))))
+type abool struct {
+	b uint64
+}
+
+func (b *abool) get() bool {
+	return atomic.LoadUint64(&b.b) == 1
+}
+
+func (b *abool) set(v bool) {
+	if v {
+		atomic.StoreUint64(&b.b, 1)
+	} else {
+		atomic.StoreUint64(&b.b, 0)
+	}
 }

@@ -134,15 +134,21 @@ func TestPubSubFuncUnsubscribe(t *testing.T) {
 
 	var unsubfn func()
 	count := 0
+	stepper := make(chan struct{})
 	subfn := func(interface{}) {
 		if count == 5 {
-			unsubfn()
+			go func() {
+				unsubfn()
+				close(stepper)
+			}()
+
 			return
 		}
 		if count > 5 {
 			t.Error("value recieved after unsubscribing")
 			return
 		}
+		stepper <- struct{}{}
 		count++
 	}
 
@@ -150,7 +156,9 @@ func TestPubSubFuncUnsubscribe(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	go func() { stepper <- struct{}{} }()
 	for i := 0; i <= 10; i++ {
+		<-stepper
 		ps.Pub(struct{}{})
 	}
 }

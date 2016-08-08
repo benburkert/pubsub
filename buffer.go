@@ -1,6 +1,9 @@
 package pubsub
 
-import "sync"
+import (
+	"math"
+	"sync"
+)
 
 type Marker int
 
@@ -22,7 +25,7 @@ type Buffer struct {
 }
 
 func NewBuffer(minSize, maxReaders int) *Buffer {
-	size := nextPow2(minSize)
+	size := calcBufferSize(minSize)
 	mask := size - 1
 
 	b := &Buffer{
@@ -110,6 +113,7 @@ func (b *Buffer) readBarrier(c *cursor) bool {
 
 // asumes b.mu RLock held
 func (b *Buffer) readTo(c *cursor, rfn ReaderFunc) {
+	defer b.mu.RUnlock()
 	defer b.wcond.Signal()
 	defer c.reset()
 
@@ -120,14 +124,10 @@ func (b *Buffer) readTo(c *cursor, rfn ReaderFunc) {
 
 		rpos, wpos := c.pos(), b.wcursor.pos()
 		for rpos != wpos {
-			v := b.data[rpos]
-			rpos = c.inc()
-
-			b.mu.RUnlock()
-			if !rfn(v) {
+			if !rfn(b.data[rpos]) {
 				return
 			}
-			b.mu.RLock()
+			rpos = c.inc()
 		}
 		b.wcond.Signal()
 	}
@@ -155,4 +155,8 @@ func (b *Buffer) writeBarrier() bool {
 		}
 	}
 	return false
+}
+
+func calcBufferSize(minSize int) int {
+	return int(math.Pow(2, math.Ceil(math.Log2(float64(minSize)))))
 }

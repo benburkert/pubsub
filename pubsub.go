@@ -2,7 +2,6 @@ package pubsub
 
 import (
 	"errors"
-	"math"
 	"sync"
 )
 
@@ -18,6 +17,7 @@ type PubSub struct {
 
 	donec MarkerChan
 	doneo sync.Once
+	doneb *abool
 
 	pubwg sync.WaitGroup
 	subwg sync.WaitGroup
@@ -27,8 +27,7 @@ type PubSub struct {
 }
 
 func New(minBufferSize, maxSubCount int) (*PubSub, error) {
-	size := calcBufferSize(minBufferSize)
-	if size < 2 {
+	if minBufferSize < 2 {
 		return nil, errors.New("minBufferSize must be > 1")
 	}
 
@@ -37,8 +36,9 @@ func New(minBufferSize, maxSubCount int) (*PubSub, error) {
 	}
 
 	return &PubSub{
-		buffer: NewBuffer(size, maxSubCount),
+		buffer: NewBuffer(minBufferSize, maxSubCount),
 		donec:  make(MarkerChan),
+		doneb:  new(abool),
 		subMax: maxSubCount,
 	}, nil
 }
@@ -76,6 +76,7 @@ func (ps *PubSub) AddSubscriber(sub Subscriber) error {
 func (ps *PubSub) Close() {
 	ps.doneo.Do(func() {
 		ps.buffer.Write(ps.donec)
+		ps.doneb.set(true)
 		close(ps.donec)
 	})
 
@@ -208,14 +209,5 @@ func (ps *PubSub) delSub() {
 }
 
 func (ps *PubSub) isClosed() bool {
-	select {
-	case <-ps.donec:
-		return true
-	default:
-		return false
-	}
-}
-
-func calcBufferSize(minSize int) int {
-	return int(math.Ceil(math.Log2(float64(minSize + 1))))
+	return ps.doneb.get()
 }
