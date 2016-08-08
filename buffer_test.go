@@ -5,6 +5,7 @@ import (
 	"runtime"
 	"sync"
 	"testing"
+	"unsafe"
 )
 
 func TestBufferWrite(t *testing.T) {
@@ -169,17 +170,25 @@ func TestConcurrentReadTo(t *testing.T) {
 	}
 }
 
-var buffr *Buffer
+func BenchmarkBuffer(b *testing.B) {
+	b.Run("Small", bufferBench{0.5, 0}.bench)
+	b.Run("Medium", bufferBench{1, 1}.bench)
+	b.Run("Large", bufferBench{2, 0}.bench)
+}
 
-func BenchmarkSmallBuffer(b *testing.B) {
-	n := (b.N + 1) / 2
+type bufferBench struct {
+	x float64
+	y int
+}
+
+func (bb bufferBench) bench(b *testing.B) {
+	n := (int(float64(b.N)*bb.x) + bb.y) / 2
 	if n < 2 {
 		n = 2
 	}
 
 	m := runtime.GOMAXPROCS(-1)
 	buffer := NewBuffer(n, m)
-	buffr = buffer
 
 	data := make([]interface{}, b.N)
 	for i := range data {
@@ -200,38 +209,7 @@ func BenchmarkSmallBuffer(b *testing.B) {
 		}()
 	}
 
-	b.SetBytes(int64(m))
-	b.ReportAllocs()
-	b.ResetTimer()
-
-	buffer.WriteSlice(data)
-	donewg.Wait()
-}
-
-func BenchmarkLargeBuffer(b *testing.B) {
-	m := runtime.GOMAXPROCS(-1)
-	buffer := NewBuffer(b.N*2, m)
-
-	data := make([]interface{}, b.N)
-	for i := range data {
-		data[i] = i
-	}
-
-	donewg := sync.WaitGroup{}
-	donewg.Add(m)
-
-	for i := 0; i < m; i++ {
-		go func() {
-			defer donewg.Done()
-			count := 0
-			buffer.ReadTo(func(v interface{}) bool {
-				count++
-				return count == len(data)
-			})
-		}()
-	}
-
-	b.SetBytes(int64(m))
+	b.SetBytes(int64(m * int(unsafe.Sizeof(data[0]))))
 	b.ReportAllocs()
 	b.ResetTimer()
 
