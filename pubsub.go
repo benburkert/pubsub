@@ -3,6 +3,8 @@ package pubsub
 import (
 	"errors"
 	"sync"
+
+	"github.com/benburkert/pubsub/abool"
 )
 
 var (
@@ -17,7 +19,7 @@ type PubSub struct {
 
 	donec MarkerChan
 	doneo sync.Once
-	doneb *abool
+	doneb abool.Value
 
 	pubwg sync.WaitGroup
 	subwg sync.WaitGroup
@@ -38,7 +40,7 @@ func New(minBufferSize, maxSubCount int) (*PubSub, error) {
 	return &PubSub{
 		buffer: NewBuffer(minBufferSize, maxSubCount),
 		donec:  make(MarkerChan),
-		doneb:  new(abool),
+		doneb:  abool.New(false),
 		subMax: maxSubCount,
 	}, nil
 }
@@ -76,7 +78,7 @@ func (ps *PubSub) AddSubscriber(sub Subscriber) error {
 func (ps *PubSub) Close() {
 	ps.doneo.Do(func() {
 		ps.buffer.Write(ps.donec)
-		ps.doneb.set(true)
+		ps.doneb.Set()
 		close(ps.donec)
 	})
 
@@ -209,5 +211,5 @@ func (ps *PubSub) delSub() {
 }
 
 func (ps *PubSub) isClosed() bool {
-	return ps.doneb.get()
+	return ps.doneb.Test()
 }
