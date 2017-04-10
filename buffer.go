@@ -3,9 +3,11 @@ package pubsub
 import (
 	"math"
 	"sync"
+
+	"github.com/benburkert/pubsub/cursor"
 )
 
-type Marker int
+type Marker byte
 
 const (
 	EmptyMarker Marker = iota
@@ -18,10 +20,10 @@ type Buffer struct {
 	data []interface{}
 
 	wcond   *sync.Cond
-	wcursor *cursor
+	wcursor *cursor.Cursor
 
 	rcond    *sync.Cond
-	rcursors cursorSlice
+	rcursors cursor.Slice
 }
 
 func NewBuffer(minSize, maxReaders int) *Buffer {
@@ -30,8 +32,8 @@ func NewBuffer(minSize, maxReaders int) *Buffer {
 
 	b := &Buffer{
 		data:     make([]interface{}, size),
-		wcursor:  newCursor(0, mask),
-		rcursors: newCursorSlice(maxReaders, mask),
+		wcursor:  cursor.New(0, mask),
+		rcursors: cursor.MakeSlice(maxReaders, mask),
 	}
 
 	for i := range b.data {
@@ -58,7 +60,7 @@ func (b *Buffer) Read() []interface{} {
 	defer b.mu.RUnlock()
 
 	c := b.getCursor()
-	defer c.reset()
+	defer c.Reset()
 
 	return b.read(c)
 }
@@ -86,20 +88,20 @@ func (b *Buffer) WriteSlice(vs []interface{}) {
 }
 
 // assumes b.mu RLock held
-func (b *Buffer) getCursor() *cursor {
-	return b.rcursors.get(b.wcursor.pos())
+func (b *Buffer) getCursor() *cursor.Cursor {
+	return b.rcursors.Alloc(b.wcursor.Pos())
 }
 
 // assumes b.mu Rlock held
-func (b *Buffer) read(c *cursor) []interface{} {
-	rpos := c.pos()
+func (b *Buffer) read(c *cursor.Cursor) []interface{} {
+	rpos := c.Pos()
 	if b.data[rpos] == EmptyMarker {
 		s := make([]interface{}, rpos)
 		copy(s, b.data[:rpos])
 		return s
 	}
 
-	size := len(b.data)
+	size := int(len(b.data))
 	s := make([]interface{}, size)
 	copy(s[:(size-rpos)], b.data[rpos:])
 	copy(s[(size-rpos):], b.data[:rpos])
@@ -107,27 +109,27 @@ func (b *Buffer) read(c *cursor) []interface{} {
 }
 
 // assumes b.mu RLock held
-func (b *Buffer) readBarrier(c *cursor) bool {
-	return c.pos() == b.wcursor.pos()
+func (b *Buffer) readBarrier(c *cursor.Cursor) bool {
+	return c.Pos() == b.wcursor.Pos()
 }
 
 // asumes b.mu RLock held
-func (b *Buffer) readTo(c *cursor, rfn ReaderFunc) {
+func (b *Buffer) readTo(c *cursor.Cursor, rfn ReaderFunc) {
 	defer b.mu.RUnlock()
 	defer b.wcond.Signal()
-	defer c.reset()
+	defer c.Reset()
 
 	for {
 		for b.readBarrier(c) {
 			b.rcond.Wait()
 		}
 
-		rpos, wpos := c.pos(), b.wcursor.pos()
+		rpos, wpos := c.Pos(), b.wcursor.Pos()
 		for rpos != wpos {
 			if !rfn(b.data[rpos]) {
 				return
 			}
-			rpos = c.inc()
+			rpos = c.Inc()
 		}
 		b.wcond.Signal()
 	}
@@ -139,18 +141,18 @@ func (b *Buffer) write(v interface{}) {
 		b.wcond.Wait()
 	}
 
-	wpos := b.wcursor.pos()
+	wpos := b.wcursor.Pos()
 	b.data[wpos] = v
-	b.wcursor.inc()
+	b.wcursor.Inc()
 
 	b.rcond.Broadcast()
 }
 
 // assumes b.mu Lock held
 func (b *Buffer) writeBarrier() bool {
-	npos := b.wcursor.next()
+	npos := b.wcursor.Next()
 	for _, c := range b.rcursors {
-		if npos == c.pos() {
+		if npos == c.Pos() {
 			return true
 		}
 	}
