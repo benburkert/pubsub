@@ -2,46 +2,47 @@ package pubsub
 
 import (
 	"fmt"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
 )
 
 func TestPubSubErrors(t *testing.T) {
-	if _, err := New(1, 1); err == nil {
+	if _, err := New[int](1, 1); err == nil {
 		t.Error("expected error for minBufferSize=1")
 	}
-	if _, err := New(2, 0); err == nil {
+	if _, err := New[int](2, 0); err == nil {
 		t.Error("expected error for maxSubCount=0")
 	}
 
-	ps, err := New(2, 1)
+	ps, err := New[int](2, 1)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	if _, err = ps.SubChan(make(chan interface{})); err != nil {
+	if _, err = ps.SubChan(make(chan int)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = ps.SubChan(make(chan interface{})); err != errMaxSub {
+	if _, err = ps.SubChan(make(chan int)); err != ErrMaxSub {
 		t.Errorf("unexpected error %q", err)
 	}
 
 	ps.Close()
-	if _, err = ps.SubChan(make(chan interface{})); err != errClosed {
+	if _, err = ps.SubChan(make(chan int)); err != ErrClosed {
 		t.Errorf("unexpected error %q", err)
 	}
 }
 
 func TestPubSubFuncs(t *testing.T) {
-	ps, err := New(4, 2)
+	ps, err := New[struct{}](4, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ps.Close()
 
 	counter := new(int32)
-	fn := func(interface{}) { atomic.AddInt32(counter, 1) }
+	fn := func(struct{}) { atomic.AddInt32(counter, 1) }
 
 	if _, err := ps.SubFunc(fn); err != nil {
 		t.Fatal(err)
@@ -60,7 +61,7 @@ func TestPubSubFuncs(t *testing.T) {
 }
 
 func TestPubSubChans(t *testing.T) {
-	ps, err := New(4, 2)
+	ps, err := New[struct{}](4, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -70,8 +71,8 @@ func TestPubSubChans(t *testing.T) {
 	wg.Add(32)
 
 	for i := 0; i < 2; i++ {
-		ch := make(chan interface{})
-		go func(ch <-chan interface{}) {
+		ch := make(chan struct{})
+		go func(ch <-chan struct{}) {
 			for range ch {
 				wg.Done()
 			}
@@ -88,26 +89,30 @@ func TestPubSubChans(t *testing.T) {
 	wg.Wait()
 }
 
-func TesPubSubMixed(t *testing.T) {
-	ps, err := New(4, 2)
+func TestPubSubMixed(t *testing.T) {
+	ps, err := New[struct{}](4, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ps.Close()
 
+	wg := &sync.WaitGroup{}
+	wg.Add(32)
+
 	counter := new(int32)
-	fn := func(interface{}) { atomic.AddInt32(counter, 1) }
+	fn := func(struct{}) {
+		atomic.AddInt32(counter, 1)
+		wg.Done()
+	}
 
 	if _, err := ps.SubFunc(fn); err != nil {
 		t.Fatal(err)
 	}
 
-	wg := &sync.WaitGroup{}
-	wg.Add(32)
-	ch := make(chan interface{})
+	ch := make(chan struct{})
 	go func() {
-		for range ch {
-			fn(struct{}{})
+		for v := range ch {
+			fn(v)
 		}
 	}()
 
@@ -126,7 +131,7 @@ func TesPubSubMixed(t *testing.T) {
 }
 
 func TestPubSubFuncUnsubscribe(t *testing.T) {
-	ps, err := New(4, 2)
+	ps, err := New[struct{}](4, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -135,7 +140,7 @@ func TestPubSubFuncUnsubscribe(t *testing.T) {
 	var unsubfn func()
 	count := 0
 	stepper := make(chan struct{})
-	subfn := func(interface{}) {
+	subfn := func(struct{}) {
 		if count == 5 {
 			go func() {
 				unsubfn()
@@ -164,13 +169,13 @@ func TestPubSubFuncUnsubscribe(t *testing.T) {
 }
 
 func TestPubSubChanUnsubscribe(t *testing.T) {
-	ps, err := New(4, 2)
+	ps, err := New[struct{}](4, 2)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer ps.Close()
 
-	ch := make(chan interface{})
+	ch := make(chan struct{})
 	unsubch, err := ps.SubChan(ch)
 	if err != nil {
 		t.Fatal(err)
@@ -192,4 +197,33 @@ func TestPubSubChanUnsubscribe(t *testing.T) {
 		ps.Pub(struct{}{})
 	}
 	<-donec
+}
+
+func TestNonComparableType(t *testing.T) {
+	ps, err := New[map[string]struct{}](4, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ch := make(chan map[string]struct{}, 1)
+	if _, err = ps.SubChan(ch); err != nil {
+		t.Fatal(err)
+	}
+
+	val := map[string]struct{}{
+		"foo": struct{}{},
+		"bar": struct{}{},
+	}
+
+	if err := ps.Pub(val); err != nil {
+		t.Fatal(err)
+	}
+	ps.Close()
+
+	if want, got := val, <-ch; !reflect.DeepEqual(want, got) {
+		t.Fatalf("want map %q, got %q", want, got)
+	}
+	if _, ok := <-ch; ok {
+		t.Fatal("expected subscriber chan to be closed")
+	}
 }

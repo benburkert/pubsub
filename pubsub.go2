@@ -8,16 +8,19 @@ import (
 )
 
 var (
-	errClosed = errors.New("PubSub is closed")
-	errMaxSub = errors.New("maxSubCount reached")
+	ErrClosed = errors.New("PubSub is closed")
+	ErrMaxSub = errors.New("maxSubCount reached")
 )
 
-type MarkerChan chan struct{}
+type cell[T any] struct {
+	val T
+	ch  chan struct{}
+}
 
-type PubSub struct {
-	buffer *Buffer
+type PubSub[T any] struct {
+	buffer *Buffer[*cell[T]]
 
-	donec MarkerChan
+	donec chan struct{}
 	doneo sync.Once
 	doneb abool.Value
 
@@ -28,7 +31,7 @@ type PubSub struct {
 	subCount, subMax int
 }
 
-func New(minBufferSize, maxSubCount int) (*PubSub, error) {
+func New[T any](minBufferSize, maxSubCount int) (*PubSub[T], error) {
 	if minBufferSize < 2 {
 		return nil, errors.New("minBufferSize must be > 1")
 	}
@@ -37,48 +40,18 @@ func New(minBufferSize, maxSubCount int) (*PubSub, error) {
 		return nil, errors.New("maxSubCount must be > 0")
 	}
 
-	return &PubSub{
-		buffer: NewBuffer(minBufferSize, maxSubCount),
-		donec:  make(MarkerChan),
+	return &PubSub[T]{
+		buffer: NewBuffer((*cell[T])(nil), minBufferSize, maxSubCount),
+		donec:  make(chan struct{}),
 		doneb:  abool.New(false),
 		subMax: maxSubCount,
 	}, nil
 }
 
-func (ps *PubSub) AddPublisher(pub Publisher) error {
-	if ps.isClosed() {
-		return errClosed
-	}
-
-	ps.pubwg.Add(1)
-	ctx := &Context{
-		Buffer: ps.buffer,
-		Done:   ps.donec,
-		Close:  ps.pubwg.Done,
-	}
-	return pub.PublishTo(ctx)
-}
-
-func (ps *PubSub) AddSubscriber(sub Subscriber) error {
-	if ps.isClosed() {
-		return errClosed
-	}
-	if !ps.addSub() {
-		return errMaxSub
-	}
-
-	ctx := &Context{
-		Buffer: ps.buffer,
-		Done:   ps.donec,
-		Close:  ps.delSub,
-	}
-	return sub.SubscribeTo(ctx)
-}
-
-func (ps *PubSub) Close() {
+func (ps *PubSub[T]) Close() {
 	ps.doneo.Do(func() {
-		ps.buffer.Write(ps.donec)
 		ps.doneb.Set()
+		ps.buffer.Write(&cell[T]{ch: ps.donec})
 		close(ps.donec)
 	})
 
@@ -86,18 +59,18 @@ func (ps *PubSub) Close() {
 	ps.subwg.Wait()
 }
 
-func (ps *PubSub) Pub(v interface{}) error {
+func (ps *PubSub[T]) Pub(v T) error {
 	if ps.isClosed() {
-		return errClosed
+		return ErrClosed
 	}
 
-	ps.buffer.Write(v)
+	ps.buffer.Write(&cell[T]{val: v})
 	return nil
 }
 
-func (ps *PubSub) PubChan(ch <-chan interface{}) (<-chan struct{}, error) {
+func (ps *PubSub[T]) PubChan(ch <-chan T) (<-chan struct{}, error) {
 	if ps.isClosed() {
-		return nil, errClosed
+		return nil, ErrClosed
 	}
 
 	ps.pubwg.Add(1)
@@ -106,11 +79,14 @@ func (ps *PubSub) PubChan(ch <-chan interface{}) (<-chan struct{}, error) {
 
 		for {
 			select {
-			case v := <-ch:
-				ps.buffer.Write(v)
+			case v, ok := <-ch:
+				if !ok {
+					return
+				}
+				ps.buffer.Write(&cell[T]{val: v})
 			case <-ps.donec:
 				for v := range ch {
-					ps.buffer.Write(v)
+					ps.buffer.Write(&cell[T]{val: v})
 				}
 				return
 			}
@@ -120,38 +96,43 @@ func (ps *PubSub) PubChan(ch <-chan interface{}) (<-chan struct{}, error) {
 	return ps.donec, nil
 }
 
-func (ps *PubSub) PubSlice(vs []interface{}) error {
+func (ps *PubSub[T]) PubSlice(vs []T) error {
 	if ps.isClosed() {
-		return errClosed
+		return ErrClosed
 	}
 
-	ps.buffer.WriteSlice(vs)
+	cs := make([]*cell[T], len(vs))
+	for i, v := range vs {
+		cs[i] = &cell[T]{val: v}
+	}
+
+	ps.buffer.WriteSlice(cs)
 	return nil
 }
 
-func (ps *PubSub) SubChan(ch chan<- interface{}) (chan<- struct{}, error) {
+func (ps *PubSub[T]) SubChan(ch chan<- T) (chan<- struct{}, error) {
 	if ps.isClosed() {
-		return nil, errClosed
+		return nil, ErrClosed
 	}
 	if !ps.addSub() {
-		return nil, errMaxSub
+		return nil, ErrMaxSub
 	}
 
-	unsubc := make(MarkerChan)
+	unsubc := make(chan struct{})
 	go func() {
 		<-unsubc
-		ps.Pub(unsubc)
+
+		ps.buffer.Write(&cell[T]{ch: unsubc})
 	}()
 
-	rfn := func(v interface{}) bool {
-		if vch, ok := v.(MarkerChan); ok {
-			if vch == ps.donec || vch == unsubc {
-				close(ch)
-				ps.delSub()
-				return false
-			}
-		} else {
-			ch <- v
+	rfn := func(c *cell[T]) bool {
+		if c.ch == ps.donec || c.ch == unsubc {
+			close(ch)
+			ps.delSub()
+			return false
+		}
+		if c.ch == nil {
+			ch <- c.val
 		}
 		return true
 	}
@@ -160,27 +141,26 @@ func (ps *PubSub) SubChan(ch chan<- interface{}) (chan<- struct{}, error) {
 	return unsubc, nil
 }
 
-func (ps *PubSub) SubFunc(fn func(interface{})) (func(), error) {
+func (ps *PubSub[T]) SubFunc(fn func(T)) (func(), error) {
 	if ps.isClosed() {
-		return nil, errClosed
+		return nil, ErrClosed
 	}
 	if !ps.addSub() {
-		return nil, errMaxSub
+		return nil, ErrMaxSub
 	}
 
-	unsubc := make(MarkerChan)
+	unsubc := make(chan struct{})
 	unsubfn := func() {
-		ps.Pub(unsubc)
+		ps.buffer.Write(&cell[T]{ch: unsubc})
 	}
 
-	rfn := func(v interface{}) bool {
-		if vch, ok := v.(MarkerChan); ok {
-			if vch == ps.donec || vch == unsubc {
-				ps.delSub()
-				return false
-			}
-		} else {
-			fn(v)
+	rfn := func(c *cell[T]) bool {
+		if c.ch == ps.donec || c.ch == unsubc {
+			ps.delSub()
+			return false
+		}
+		if c.ch == nil {
+			fn(c.val)
 		}
 		return true
 	}
@@ -189,7 +169,7 @@ func (ps *PubSub) SubFunc(fn func(interface{})) (func(), error) {
 	return unsubfn, nil
 }
 
-func (ps *PubSub) addSub() bool {
+func (ps *PubSub[T]) addSub() bool {
 	ps.submu.Lock()
 	defer ps.submu.Unlock()
 
@@ -202,7 +182,7 @@ func (ps *PubSub) addSub() bool {
 	return true
 }
 
-func (ps *PubSub) delSub() {
+func (ps *PubSub[T]) delSub() {
 	ps.submu.Lock()
 	defer ps.submu.Unlock()
 
@@ -210,6 +190,6 @@ func (ps *PubSub) delSub() {
 	ps.subwg.Done()
 }
 
-func (ps *PubSub) isClosed() bool {
+func (ps *PubSub[T]) isClosed() bool {
 	return ps.doneb.Test()
 }

@@ -2,39 +2,49 @@ package main
 
 import (
 	"fmt"
+	"log"
+	"strconv"
 	"sync"
 
 	"github.com/benburkert/pubsub"
 )
 
 func main() {
-	ps, _ := pubsub.New(2, 4)
+	ps, err := pubsub.New[string](2, 4)
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	wg := &sync.WaitGroup{}
 	wg.Add(4)
 
 	for _, id := range []string{"A", "B", "C", "D"} {
-		ch := make(chan interface{}, 4)
+		ch := make(chan string, 4)
 		ps.SubChan(ch)
 
-		go func(ch <-chan interface{}, id string) {
+		go func(ch <-chan string, id string) {
 			defer wg.Done()
 
 			for v := range ch {
-				fmt.Printf("%s got %d\n", id, v)
+				fmt.Printf("%s got %s\n", id, v)
 			}
 		}(ch, id)
 	}
 
-	ch := make(chan interface{})
-	donec, _ := ps.PubChan(ch)
-	for i := 0; i <= 25; i++ {
+	ch := make(chan string)
+	donec, err := ps.PubChan(ch)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	for i := 0; i < 25; i++ {
 		select {
-		case ch <- i:
+		case ch <- strconv.Itoa(i):
 		case <-donec:
-			panic("PubSub closed unexpectedly")
+			log.Fatal("PubSub closed unexpectedly")
 		}
 	}
+
 	close(ch)
 	ps.Close()
 	wg.Wait()

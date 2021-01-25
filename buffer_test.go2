@@ -3,48 +3,109 @@ package pubsub
 import (
 	"reflect"
 	"runtime"
+	"strconv"
 	"sync"
 	"testing"
 	"unsafe"
 )
 
-func TestBufferWrite(t *testing.T) {
-	buffer := NewBuffer(4, 1)
+var (
+	ints   = []int{1, 2, 3, 4, 5, 6, 7, 8, 9}
+	floats = []float64{
+		0.12345, 1.2345, 12.345, 123.45, 1234.5,
+		5.43210, 54.321, 543.21, 5432.1,
+	}
+	strings = []string{"A", "B", "C", "D", "E", "F", "G", "H", "I"}
 
-	want := []interface{}{}
-	if got := buffer.Read(); !reflect.DeepEqual(want, got) {
+	structs = []testStruct{
+		{i: 1, f: 0.12345, s: "A"},
+		{i: 2, f: 1.2345, s: "B"},
+		{i: 3, f: 12.345, s: "C"},
+		{i: 4, f: 123.45, s: "D"},
+		{i: 5, f: 1234.5, s: "E"},
+		{i: 6, f: 5.4321, s: "F"},
+		{i: 7, f: 54.321, s: "G"},
+		{i: 8, f: 543.21, s: "H"},
+		{i: 9, f: 5432.1, s: "I"},
+	}
+
+	pointers = []*testStruct{
+		&testStruct{i: 1, f: 0.12345, s: "A"},
+		&testStruct{i: 2, f: 1.2345, s: "B"},
+		&testStruct{i: 3, f: 12.345, s: "C"},
+		&testStruct{i: 4, f: 123.45, s: "D"},
+		&testStruct{i: 5, f: 1234.5, s: "E"},
+		&testStruct{i: 6, f: 5.4321, s: "F"},
+		&testStruct{i: 7, f: 54.321, s: "G"},
+		&testStruct{i: 8, f: 543.21, s: "H"},
+		&testStruct{i: 9, f: 5432.1, s: "I"},
+	}
+)
+
+type testStruct struct {
+	i int
+	f float64
+	s string
+}
+
+type testCase[T comparable] struct {
+	buf *Buffer[T]
+
+	vals []T
+}
+
+func TestBufferWrite(t *testing.T) {
+	t.Run("int", testCase[int]{NewBuffer(0, 4, 1), ints}.testBufferWrite)
+	t.Run("float", testCase[float64]{NewBuffer(0.0, 4, 1), floats}.testBufferWrite)
+	t.Run("strings", testCase[string]{NewBuffer("", 4, 1), strings}.testBufferWrite)
+	t.Run("structs", testCase[testStruct]{NewBuffer(testStruct{}, 4, 1), structs}.testBufferWrite)
+	t.Run("pointers", testCase[*testStruct]{NewBuffer((*testStruct)(nil), 4, 1), pointers}.testBufferWrite)
+}
+
+func (tc testCase[T]) testBufferWrite(t *testing.T) {
+	t.Parallel()
+
+	want := []T{}
+	if got := tc.buf.Read(); !reflect.DeepEqual(want, got) {
 		t.Errorf("want empty buffer read %v, got %v", want, got)
 	}
 
-	buffer.Write("one")
-	want = append(want, "one")
-	if got := buffer.Read(); !reflect.DeepEqual(want, got) {
-		t.Errorf("want sparse buffer read %v, got %v", want, got)
+	tc.buf.Write(tc.vals[0])
+	if want, got := tc.vals[:1], tc.buf.Read(); !reflect.DeepEqual(want, got) {
+		t.Errorf("want sparse buffer read %#v, got %#v", want, got)
 	}
 
-	buffer.Write("two")
-	buffer.Write("three")
-	want = append(want, "two", "three")
-	if got := buffer.Read(); !reflect.DeepEqual(want, got) {
+	tc.buf.Write(tc.vals[1])
+	tc.buf.Write(tc.vals[2])
+	if want, got := tc.vals[:3], tc.buf.Read(); !reflect.DeepEqual(want, got) {
 		t.Errorf("want full buffer read %v, got %v", want, got)
 	}
 
-	buffer.Write("four")
-	buffer.Write("five")
-	want = append(want[1:], "four", "five")
-	if got := buffer.Read(); !reflect.DeepEqual(want, got) {
+	tc.buf.Write(tc.vals[3])
+	tc.buf.Write(tc.vals[4])
+	if want, got := tc.vals[1:5], tc.buf.Read(); !reflect.DeepEqual(want, got) {
 		t.Errorf("want wrapped buffer read %v, got %v", want, got)
 	}
 }
 
 func TestBufferReadTo(t *testing.T) {
-	buffer := NewBuffer(4, 1)
-	donec := make(chan struct{})
-	want := []string{"A", "B", "C", "D", "E", "F", "G", "H", "I"}
+	t.Run("int", testCase[int]{NewBuffer(0, 4, 1), ints}.testBufferReadTo)
+	t.Run("float", testCase[float64]{NewBuffer(0.0, 4, 1), floats}.testBufferReadTo)
+	t.Run("strings", testCase[string]{NewBuffer("", 4, 1), strings}.testBufferReadTo)
+	t.Run("structs", testCase[testStruct]{NewBuffer(testStruct{}, 4, 1), structs}.testBufferReadTo)
+	t.Run("pointers", testCase[*testStruct]{NewBuffer((*testStruct)(nil), 4, 1), pointers}.testBufferReadTo)
+}
 
-	got := []string{}
-	var rfn ReaderFunc = func(v interface{}) bool {
-		got = append(got, v.(string))
+func (tc testCase[T]) testBufferReadTo(t *testing.T) {
+	t.Parallel()
+
+	buffer := tc.buf
+	donec := make(chan struct{})
+	want := tc.vals
+
+	got := []T{}
+	rfn := func(v T) bool {
+		got = append(got, v)
 		if len(got) == len(want) {
 			close(donec)
 			return false
@@ -64,12 +125,22 @@ func TestBufferReadTo(t *testing.T) {
 }
 
 func TestBufferWriteSlice(t *testing.T) {
-	buffer := NewBuffer(4, 1)
-	donec := make(chan struct{})
-	want := []interface{}{"A", "B", "C", "D", "E"}
+	t.Run("int", testCase[int]{NewBuffer(0, 4, 1), ints[:5]}.testBufferWriteSlice)
+	t.Run("float", testCase[float64]{NewBuffer(0.0, 4, 1), floats[:5]}.testBufferWriteSlice)
+	t.Run("strings", testCase[string]{NewBuffer("", 8, 1), strings}.testBufferWriteSlice)
+	t.Run("structs", testCase[testStruct]{NewBuffer(testStruct{}, 4, 1), structs[:5]}.testBufferWriteSlice)
+	t.Run("pointers", testCase[*testStruct]{NewBuffer((*testStruct)(nil), 8, 1), pointers}.testBufferWriteSlice)
+}
 
-	got := []interface{}{}
-	var rfn ReaderFunc = func(v interface{}) bool {
+func (tc testCase[T]) testBufferWriteSlice(t *testing.T) {
+	t.Parallel()
+
+	buffer := tc.buf
+	donec := make(chan struct{})
+	want := tc.vals
+
+	got := []T{}
+	rfn := func(v T) bool {
 		got = append(got, v)
 		if len(got) == len(want) {
 			close(donec)
@@ -93,14 +164,24 @@ func TestBufferWriteSlice(t *testing.T) {
 }
 
 func TestBufferFullReadTo(t *testing.T) {
-	buffer := NewBuffer(4, 1)
+	t.Run("int", testCase[int]{NewBuffer(0, 4, 1), ints}.testBufferFullReadTo)
+	t.Run("strings", testCase[string]{NewBuffer("", 4, 1), strings}.testBufferFullReadTo)
+	t.Run("float", testCase[float64]{NewBuffer(0.0, 4, 1), floats}.testBufferFullReadTo)
+	t.Run("structs", testCase[testStruct]{NewBuffer(testStruct{}, 4, 1), structs}.testBufferFullReadTo)
+	t.Run("pointers", testCase[*testStruct]{NewBuffer((*testStruct)(nil), 4, 1), pointers}.testBufferFullReadTo)
+}
+
+func (tc testCase[T]) testBufferFullReadTo(t *testing.T) {
+	t.Parallel()
+
+	buffer := tc.buf
 	donec := make(chan struct{})
-	data := []interface{}{"A", "B", "C", "D", "E", "F", "G", "H", "I"}
+	data := tc.vals
 
 	buffer.WriteSlice(data[:5])
 
-	got := []interface{}{}
-	var rfn ReaderFunc = func(v interface{}) bool {
+	got := []T{}
+	rfn := func(v T) bool {
 		got = append(got, v)
 		if len(got) == len(data[5:]) {
 			close(donec)
@@ -126,14 +207,32 @@ func TestBufferFullReadTo(t *testing.T) {
 
 func TestConcurrentReadTo(t *testing.T) {
 	n, m := 1024, runtime.NumCPU()-1
-	buffer := NewBuffer(n, m)
 
-	data := make([]interface{}, n*m)
-	for i := range data {
-		data[i] = i
+	ints := make([]int, n*m)
+	for i := range ints {
+		ints[i] = i
 	}
 
-	gots := make([][]interface{}, m)
+	t.Run("int", testCase[int]{NewBuffer(^0, n, m), ints}.testConcurrentReadTo)
+
+	strings := make([]string, n*m)
+	for i := range strings {
+		strings[i] = strconv.Itoa(i)
+	}
+
+	t.Run("strings", testCase[string]{NewBuffer("", n, m), strings}.testConcurrentReadTo)
+	t.Run("float", testCase[float64]{NewBuffer(0.0, n, m), floats}.testConcurrentReadTo)
+	t.Run("structs", testCase[testStruct]{NewBuffer(testStruct{}, n, m), structs}.testConcurrentReadTo)
+	t.Run("pointers", testCase[*testStruct]{NewBuffer((*testStruct)(nil), n, m), pointers}.testConcurrentReadTo)
+}
+
+func (tc testCase[T]) testConcurrentReadTo(t *testing.T) {
+	m := runtime.NumCPU() - 1
+
+	buffer := tc.buf
+	data := tc.vals
+
+	gots := make([][]T, m)
 
 	readywg := sync.WaitGroup{}
 	readywg.Add(m)
@@ -143,8 +242,8 @@ func TestConcurrentReadTo(t *testing.T) {
 
 	for i := range gots {
 		go func(i int) {
-			got := make([]interface{}, 0, len(data))
-			var rfn ReaderFunc = func(v interface{}) bool {
+			got := make([]T, 0, len(data))
+			rfn := func(v T) bool {
 				got = append(got, v)
 				if len(got) == len(data) {
 					gots[i] = got
@@ -188,9 +287,9 @@ func (bb bufferBench) bench(b *testing.B) {
 	}
 
 	m := runtime.GOMAXPROCS(-1)
-	buffer := NewBuffer(n, m)
+	buffer := NewBuffer(0, n, m)
 
-	data := make([]interface{}, b.N)
+	data := make([]int, b.N)
 	for i := range data {
 		data[i] = i
 	}
@@ -202,7 +301,7 @@ func (bb bufferBench) bench(b *testing.B) {
 		go func() {
 			defer donewg.Done()
 			count := 0
-			buffer.ReadTo(func(v interface{}) bool {
+			buffer.ReadTo(func(_ int) bool {
 				count++
 				return count == len(data)
 			})
